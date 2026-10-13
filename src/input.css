@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html, body { background: #fff; overscroll-behavior-y: none; -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+input, textarea, select { font-size: 16px; } /* 防止 iPhone 输入时自动放大页面 */
