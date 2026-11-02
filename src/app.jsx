@@ -1,9 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useSync, LS } from "./sync.js";
-import { XAxis, YAxis, ResponsiveContainer, LineChart, Line } from "recharts";
 import {
   ScrollText, BarChart3, LayoutGrid, Settings, Plus, X, Delete, ChevronLeft, ChevronRight, ChevronDown,
-  ChevronsUpDown, AlignLeft, Calendar, Trash2, Check, Download, Upload, Search, Repeat, Minus, SlidersHorizontal, RefreshCw, Cloud,
+  ChevronsUpDown, AlignLeft, Calendar, Trash2, Check, Download, Upload, Search, Repeat, Minus, SlidersHorizontal, Pencil, RefreshCw, Cloud,
 } from "lucide-react";
 
 /* ---------- 视觉 ---------- */
@@ -129,11 +128,12 @@ function statRange(mode, offset) {
   if (mode === "month") return [new Date(t.getFullYear(), t.getMonth() + offset, 1), new Date(t.getFullYear(), t.getMonth() + offset + 1, 0)];
   return [new Date(t.getFullYear() + offset, 0, 1), new Date(t.getFullYear() + offset, 11, 31)];
 }
-function budgetRange(b, ref = todayDate()) {
-  if (b.period === "day") return [ref, ref];
+function periodRange(b, offset = 0) {
   if (b.period === "custom") return [parse(b.start), parse(b.end)];
-  return statRange(b.period, 0);
+  if (b.period === "day") { const d = addDays(todayDate(), offset); return [d, d]; }
+  return statRange(b.period, offset);
 }
+const budgetRange = (b) => periodRange(b, 0);
 /* 预算金额有历史：history 记录「从哪一期起是多少」，overrides 记录单独某一期的临时调整 */
 function baseAmount(b, key) {
   if (!b.history?.length) return b.amount; // 旧数据：一直是同一个金额
@@ -159,14 +159,14 @@ function periodLabel(period, key) {
   if (period === "month") return `${d.getFullYear()}年${d.getMonth() + 1}月`;
   return `${d.getFullYear()}年`;
 }
-function budgetStatus(b, expenses, K) {
-  const [s, e] = budgetRange(b);
+function budgetStatus(b, expenses, K, offset = 0) {
+  const [s, e] = periodRange(b, offset);
   const t = todayDate();
   const amount = budgetAmount(b, s) ?? b.amount;
   const spent = sum(expenses.filter((x) => matchCat(b, x, K) && inRange(x, s, e)));
   const total = daysBetween(s, e);
   let elapsed;
-  if (b.period === "day") { const n = new Date(); elapsed = (n.getHours() + n.getMinutes() / 60) / 24; }
+  if (b.period === "day" && offset === 0) { const n = new Date(); elapsed = (n.getHours() + n.getMinutes() / 60) / 24; }
   else elapsed = t < s ? 0 : Math.min(1, daysBetween(s, t) / total);
   const daysLeft = t > e ? 0 : daysBetween(t < s ? s : t, e);
   const remaining = amount - spent;
@@ -318,6 +318,7 @@ export default function App() {
   const [saveErr, setSaveErr] = useState(false);
   const [search, setSearch] = useState(null); // null | { filters: bool }
   const [swipeId, setSwipeId] = useState(null); // 当前左滑展开的记录
+  const [budgetPage, setBudgetPage] = useState(null); // 打开的预算详情 id
   const [toast, setToast] = useState(null);   // 刚删除的记录，5 秒内可撤销
   useEffect(() => {
     if (!toast) return;
@@ -369,7 +370,7 @@ export default function App() {
     upd((d) => ({ [arr]: [...(d[arr] || []).filter((x) => x.id !== rec.id), rec] }));
     setToast(null);
   };
-  const ctx = { data, cur, base, K, incOf, upd, sync, open: setSheet, removeRecord, swipeId, setSwipeId, openSearch: (filters) => setSearch({ filters }) };
+  const ctx = { data, cur, base, K, incOf, upd, sync, open: (x) => (x?.type === "budgetDetail" ? setBudgetPage(x.id) : setSheet(x)), removeRecord, swipeId, setSwipeId, openSearch: (filters) => setSearch({ filters }) };
   const close = () => setSheet(null);
   const tabBtn = (id, Icon, label) => (
     <button onClick={() => setTab(id)} aria-label={label} className="w-12 h-12 flex items-center justify-center">
@@ -405,8 +406,9 @@ export default function App() {
         </div>
       </nav>
 
+      {budgetPage && <BudgetDetail {...ctx} id={budgetPage} onClose={() => setBudgetPage(null)} />}
       {search && <SearchPage {...ctx} startWithFilters={search.filters} onClose={() => setSearch(null)} />}
-      {sheet?.type === "expense" && <ExpenseSheet {...ctx} initial={sheet.exp} onClose={close} />}
+      {sheet?.type === "expense" && <ExpenseSheet {...ctx} initial={sheet.exp} preset={sheet.preset} onClose={close} />}
       {toast && (
         <div className="fixed left-0 right-0 flex justify-center px-6" style={{ bottom: "calc(96px + env(safe-area-inset-bottom))", zIndex: 60 }}>
           <div className="flex items-center gap-4 pl-5 pr-2 max-w-md w-full" style={{ height: 56, borderRadius: 18, background: C.dark, color: "#fff", boxShadow: "0 6px 20px rgba(0,0,0,.18)" }}>
@@ -416,7 +418,6 @@ export default function App() {
         </div>
       )}
       {sheet?.type === "budget" && <BudgetSheet {...ctx} onClose={close} />}
-      {sheet?.type === "budgetDetail" && <BudgetDetail {...ctx} id={sheet.id} onClose={close} />}
     </div>
   );
 }
@@ -482,7 +483,7 @@ function Ledger({ data, cur, K, incOf, open, openSearch, removeRecord, swipeId, 
 }
 
 /* ---------- 记一笔（支出/收入 + 计算器键盘 + 多币种 + 重复） ---------- */
-function ExpenseSheet({ data, cur, base, K, upd, removeRecord, initial, onClose }) {
+function ExpenseSheet({ data, cur, base, K, upd, removeRecord, initial, preset, onClose }) {
   const poolOf = (k) => (k === "income" ? data.incomeCats || [] : K.leaves);
   const sortedPool = (k) => {
     const f = {};
@@ -501,7 +502,7 @@ function ExpenseSheet({ data, cur, base, K, upd, removeRecord, initial, onClose 
   const [cc, setCc] = useState(fx0 || base);
   const [rate, setRate] = useState(fx0 ? String(initial.rate) : "");
   const [src, setSrc] = useState(initial?.rateSource || "mine");
-  const [cat, setCat] = useState(initial?.cat || defaultCat("expense"));
+  const [cat, setCat] = useState(initial?.cat || preset?.cat || defaultCat("expense"));
   const [date, setDate] = useState(initial?.date || fmt(todayDate()));
   const [note, setNote] = useState(initial?.note || "");
   const [noteOpen, setNoteOpen] = useState(!!initial?.note);
@@ -1409,6 +1410,15 @@ function BudgetSheet({ data, cur, K, upd, onClose, initial }) {
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="比如：这个月有朋友婚礼，放宽一点"
           className="w-full px-4 py-3 outline-none resize-none" style={{ borderRadius: 16, background: C.card, fontSize: 17, fontFamily: "inherit" }} />
         <button onClick={save} className="w-full mt-6" style={{ height: 56, borderRadius: 18, background: valid ? C.dark : C.faint, color: "#fff", fontSize: 18, fontWeight: 600 }}>保存</button>
+        {initial && ((initial.history || []).length > 1 || Object.keys(initial.overrides || {}).length > 0) && (
+          <div className="mt-6">
+            <div className="mb-1" style={{ fontSize: 14, color: C.muted, fontWeight: 600 }}>调整记录</div>
+            {[
+              ...(initial.history || []).map((h) => ({ key: h.from, text: h.from === "0000-01-01" ? `最初 ${cur}${fmtNum(h.amount)}` : `${periodLabel(initial.period, h.from)}起 ${cur}${fmtNum(h.amount)}` })),
+              ...Object.entries(initial.overrides || {}).map(([k, v]) => ({ key: k, text: `${periodLabel(initial.period, k)} 临时 ${cur}${fmtNum(v.amount)}${v.note ? `：${v.note}` : ""}` })),
+            ].sort((a, z) => z.key.localeCompare(a.key)).map((l, i) => <div key={i} className="py-1" style={{ fontSize: 15, color: C.sub }}>{l.text}</div>)}
+          </div>
+        )}
         {!initial && <Note>大类预算包含它下面所有子类的花费；子类预算是大类里的小限额，不用加起来等于大类。</Note>}
       </Sheet>
 
@@ -1439,112 +1449,171 @@ function BudgetSheet({ data, cur, K, upd, onClose, initial }) {
   );
 }
 
-function BudgetDetail({ data, cur, K, upd, id, onClose }) {
-  const [confirm, setConfirm] = useState(null); // "stop" | "delete"
+/* 预算详情：顶部是设置图标（记一笔 / 编辑 / 删除），下面是这个预算本期的花费明细，底部可以翻看往期 */
+function BudgetDetail({ data, cur, K, incOf, upd, open, removeRecord, swipeId, setSwipeId, id, onClose }) {
+  const [offset, setOffset] = useState(0);
   const [editing, setEditing] = useState(false);
+  const [askDel, setAskDel] = useState(false);
   const b = data.budgets.find((x) => x.id === id);
-  // 换了类目或周期后旧预算已停止：回到预算页，新预算在列表里
-  useEffect(() => { if (b && !editing && !isLiveNow(b)) onClose(); }, [b, editing]);
-  const series = useMemo(() => {
-    if (!b || b.period === "day") return [];
-    const st = budgetStatus(b, data.expenses, K), t = todayDate();
-    const rel = data.expenses.filter((x) => matchCat(b, x, K) && inRange(x, st.s, st.e));
-    let cum = 0;
-    if (b.period === "year") {
-      return Array.from({ length: 12 }, (_, m) => {
-        cum += sum(rel.filter((x) => parse(x.date).getMonth() === m));
-        return { x: `${m + 1}月`, 实际: new Date(st.s.getFullYear(), m, 1) <= t ? round(cum) : null, 计划: round((st.amount * (m + 1)) / 12) };
-      });
-    }
-    const n = daysBetween(st.s, st.e);
-    return Array.from({ length: n }, (_, i) => {
-      const d = addDays(st.s, i);
-      cum += sum(rel.filter((x) => x.date === fmt(d)));
-      return { x: `${d.getMonth() + 1}/${d.getDate()}`, 实际: d <= t ? round(cum) : null, 计划: round((st.amount * (i + 1)) / n) };
-    });
-  }, [b, data.expenses, K]);
+  // 换了类目或周期后旧预算已停止，或预算被删掉：回到预算列表
+  useEffect(() => { if (!b || (!editing && !isLiveNow(b))) onClose(); }, [b, editing]);
   if (!b) return null;
-  const closeEdit = () => setEditing(false);
-  if (editing) return <BudgetSheet data={data} cur={cur} K={K} upd={upd} initial={b} onClose={closeEdit} />;
 
-  const st = budgetStatus(b, data.expenses, K);
-  const c = b.cat === "all" ? { name: "全部开销", emoji: "💰" } : K.of(b.cat);
+  const st = budgetStatus(b, data.expenses, K, offset);
+  const c = b.cat === "all" ? { name: "全部开销", emoji: "💰", color: C.dark } : K.of(b.cat);
+  const isCustom = b.period === "custom";
+  const now = offset === 0;
   const over = st.remaining < 0;
-  const past = hasPastPeriods(b);
-  const noun = nounOf(b.period);
-  const stat = (k, v) => (
-    <div><div style={{ fontSize: 14, color: C.muted, fontWeight: 600 }}>{k}</div><div style={{ fontSize: 20, fontWeight: 600 }}>{v}</div></div>
-  );
-  // 调整记录：长期金额变化 + 临时调整
-  const log = [
-    ...(b.history || []).map((h) => ({ key: h.from, text: h.from === "0000-01-01" ? `最初 ${cur}${fmtNum(h.amount)}` : `${periodLabel(b.period, h.from)}起 ${cur}${fmtNum(h.amount)}` })),
-    ...Object.entries(b.overrides || {}).map(([k, v]) => ({ key: k, text: `${periodLabel(b.period, k)} 临时 ${cur}${fmtNum(v.amount)}${v.note ? `：${v.note}` : ""}` })),
-  ].sort((a, c2) => c2.key.localeCompare(a.key));
-  const showLog = (b.history || []).length > 1 || Object.keys(b.overrides || {}).length > 0;
+  const noun = now ? nounOf(b.period) : "这期";
+  const fill = clamp(st.remaining / st.amount);
+  const ruleIds = new Set((data.recurring || []).map((r) => r.id));
 
-  const stop = () => { upd((d) => ({ budgets: d.budgets.map((x) => (x.id === b.id ? { ...x, stoppedFrom: fmt(st.s) } : x)) })); onClose(); };
+  // 往前翻的边界：预算存在、且那一期之前还有记录
+  const earliest = data.expenses.reduce((m, x) => (x.date < m ? x.date : m), fmt(todayDate()));
+  const [ps, pe] = isCustom ? [null, null] : periodRange(b, offset - 1);
+  const canPrev = !isCustom && budgetLiveIn(b, ps) && fmt(pe) >= earliest;
+
+  const list = data.expenses.filter((x) => matchCat(b, x, K) && inRange(x, st.s, st.e))
+    .map((x) => ({ ...x, kind: "expense" }))
+    .sort((a, z) => (z.date + z.created).localeCompare(a.date + a.created));
+  const groups = [];
+  list.forEach((x) => { const g = groups[groups.length - 1]; g && g.date === x.date ? g.items.push(x) : groups.push({ date: x.date, items: [x] }); });
+  const tStr = fmt(todayDate()), yStr = fmt(addDays(todayDate(), -1));
+
+  // 「＋」：在这个预算的类目下记一笔（大类就预选最近用过的子类）
+  const presetCat = () => {
+    if (b.cat === "all") return undefined;
+    if (!K.hasKids(b.cat)) return b.cat;
+    const kids = new Set(K.kids(b.cat).map((k) => k.id));
+    const last = [...data.expenses].sort((a, z) => (z.created || "").localeCompare(a.created || "")).find((x) => kids.has(x.cat));
+    return last ? last.cat : K.kids(b.cat)[0]?.id;
+  };
+
+  const chip = isCustom ? `${md(st.s)} – ${md(st.e)}`
+    : !now ? periodLabel(b.period, fmt(st.s))
+    : b.period === "day" ? "今天" : st.daysLeft > 0 ? `剩 ${st.daysLeft} 天` : "已结束";
+  const rangeText = b.period === "day" ? `${md(st.s)} 周${WD[st.s.getDay()]}` : `${md(st.s)} – ${md(st.e)}`;
+  const right = now && st.daysLeft > 1
+    ? { v: st.perDay, label: "每天还能花" }
+    : { v: st.spent, label: "已用" };
+
+  const stop = () => { upd((d) => ({ budgets: d.budgets.map((x) => (x.id === b.id ? { ...x, stoppedFrom: fmt(budgetRange(b)[0]) } : x)) })); onClose(); };
   const remove = () => { upd((d) => ({ budgets: d.budgets.filter((x) => x.id !== b.id) })); onClose(); };
+  const past = hasPastPeriods(b);
+  const iconBtn = (label, Icon, bg, color, onClick) => (
+    <button onClick={onClick} aria-label={label} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: bg }}>
+      <Icon size={22} strokeWidth={2.3} color={color} />
+    </button>
+  );
 
   return (
-    <Sheet title={`${c.emoji} ${b.name || c.name}`} onClose={onClose}>
-      <div style={{ fontSize: 16, color: C.muted, fontWeight: 500 }} className="-mt-3 mb-4">
-        {b.name ? `${c.name} · ` : ""}{K.hasKids(b.cat) ? "含所有子类，" : ""}{PERIODS.find((p) => p.id === b.period).label}，{b.period === "day" ? "今天" : `${md(st.s)} – ${md(st.e)}`}
-      </div>
-      <Money v={over ? -st.remaining : st.remaining} cur={cur} size={48} color={over ? C.over : C.ink} />
-      <div style={{ fontSize: 17, color: C.muted }} className="mb-5">{over ? "已超支" : `${noun}还剩`}</div>
-      <div className="flex justify-between mb-5">
-        {stat("已用", `${cur}${fmtNum(st.spent)}`)}
-        {stat(st.overridden ? `${noun}预算（临时）` : "预算", `${cur}${fmtNum(st.amount)}`)}
-        {stat("日均可用", st.daysLeft > 1 ? `${cur}${fmtNum(st.perDay)}` : "–")}
-      </div>
-      {(st.note || st.overridden) && (
-        <div className="px-4 py-3 mb-5" style={{ background: C.card, borderRadius: 18, fontSize: 16, lineHeight: 1.6 }}>
-          {st.overridden && <div style={{ color: C.sub, fontWeight: 600 }}>{noun}临时调整，平时是 {cur}{fmtNum(st.normal)}</div>}
-          {st.note && <div>{st.note}</div>}
-        </div>
-      )}
-      {series.length > 0 && (
-        <>
-          <div style={{ fontSize: 14, color: C.muted, fontWeight: 600 }} className="mb-1">累计花费 vs 均匀花完的计划线</div>
-          <div style={{ height: 170 }} className="-ml-2 mb-4">
-            <ResponsiveContainer>
-              <LineChart data={series} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
-                <XAxis dataKey="x" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: C.muted }} interval="preserveStartEnd" />
-                <YAxis axisLine={false} tickLine={false} width={40} tick={{ fontSize: 12, fill: C.muted }} />
-                <Line dataKey="计划" stroke={C.faint} strokeDasharray="5 5" strokeWidth={2} dot={false} />
-                <Line dataKey="实际" stroke={over ? C.over : C.dark} strokeWidth={3} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+    <div className="fixed inset-0 z-40 overflow-y-auto" style={{ background: C.bg }}>
+      <div className="max-w-md mx-auto px-6 min-h-full flex flex-col" style={{ paddingTop: "calc(24px + env(safe-area-inset-top))", paddingBottom: "calc(24px + env(safe-area-inset-bottom))" }}>
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={onClose} className="flex items-center gap-1 pl-3 pr-4" style={{ height: 44, borderRadius: 22, background: C.card, fontSize: 17, fontWeight: 500, color: C.sub }}>
+            <ChevronLeft size={22} />返回
+          </button>
+          <div className="flex gap-3">
+            {iconBtn("在这个预算下记一笔", Plus, "#E8EAFE", "#5965E8", () => open({ type: "expense", preset: { cat: presetCat() } }))}
+            {iconBtn("编辑预算", Pencil, "#FEF1D6", "#E29A00", () => setEditing(true))}
+            {iconBtn("删除预算", Trash2, "#FDE4E3", C.over, () => setAskDel(true))}
           </div>
-        </>
-      )}
-      {showLog && (
-        <div className="mb-5">
-          <div className="mb-2" style={{ fontSize: 14, color: C.muted, fontWeight: 600 }}>调整记录</div>
-          {log.map((l, i) => <div key={i} className="py-1.5" style={{ fontSize: 16, color: C.sub }}>{l.text}</div>)}
         </div>
-      )}
 
-      <button onClick={() => setEditing(true)} className="w-full mb-3" style={{ height: 54, borderRadius: 16, background: C.dark, color: "#fff", fontSize: 17, fontWeight: 600 }}>编辑</button>
-      {past ? (
-        <div className="flex gap-2">
-          <button onClick={() => (confirm === "stop" ? stop() : setConfirm("stop"))} className="flex-1"
-            style={{ height: 50, borderRadius: 16, background: confirm === "stop" ? C.over : C.card, color: confirm === "stop" ? "#fff" : C.ink, fontSize: 16, fontWeight: 600 }}>
-            {confirm === "stop" ? `确认从${noun}停止` : "停止这个预算"}
-          </button>
-          <button onClick={() => (confirm === "delete" ? remove() : setConfirm("delete"))} className="flex-1"
-            style={{ height: 50, borderRadius: 16, background: confirm === "delete" ? C.over : C.card, color: confirm === "delete" ? "#fff" : C.over, fontSize: 16, fontWeight: 600 }}>
-            {confirm === "delete" ? "确认，连历史一起删" : "彻底删除"}
-          </button>
+        <div className="text-center">
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{c.emoji} {b.name || c.name}</div>
+          {b.name && <div style={{ fontSize: 15, color: C.muted }}>{c.name}</div>}
+          <span className="inline-block mt-2 px-4 py-1" style={{ background: C.card, borderRadius: 14, fontSize: 16, color: C.sub, fontWeight: 500 }}>
+            {PERIODS.find((p) => p.id === b.period).label}，{chip}
+          </span>
         </div>
-      ) : (
-        <button onClick={() => (confirm === "delete" ? remove() : setConfirm("delete"))} className="w-full"
-          style={{ height: 50, borderRadius: 16, background: confirm === "delete" ? C.over : C.card, color: confirm === "delete" ? "#fff" : C.over, fontSize: 16, fontWeight: 600 }}>
-          {confirm === "delete" ? "再点一次确认删除" : "删除这个预算"}
-        </button>
+
+        <div className="flex justify-between items-end mt-8">
+          <div>
+            <Money v={over ? -st.remaining : st.remaining} cur={cur} size={40} color={over ? C.over : C.ink} />
+            <div style={{ fontSize: 16, color: C.muted, fontWeight: 500 }}>{over ? `${noun}超支` : `${noun}还剩`}</div>
+          </div>
+          <div className="text-right">
+            <Money v={right.v} cur={cur} size={40} />
+            <div style={{ fontSize: 16, color: C.muted, fontWeight: 500 }}>{right.label}</div>
+          </div>
+        </div>
+
+        <div className="relative mt-5" style={{ height: 22, borderRadius: 11, background: "#E5E5EA" }}>
+          <div style={{ height: "100%", width: `${fill * 100}%`, borderRadius: 11, background: over ? C.over : c.color, transition: "width .4s" }} />
+          {now && !isCustom && b.period !== "day" && (
+            <div className="absolute" style={{ left: `calc(${(1 - st.elapsed) * 100}% - 7px)`, top: -10, borderLeft: "7px solid transparent", borderRight: "7px solid transparent", borderTop: `9px solid ${C.dark}` }} />
+          )}
+        </div>
+        <div className="flex justify-between mt-2" style={{ fontSize: 15, color: C.muted, fontWeight: 500 }}>
+          <span>已用 {cur}{fmtNum(st.spent)}</span>
+          <span>{st.overridden ? "临时预算" : "预算"} {cur}{fmtNum(st.amount)}</span>
+        </div>
+        {(st.note || st.overridden) && (
+          <div className="mt-3 px-4 py-3" style={{ background: C.card, borderRadius: 16, fontSize: 15, lineHeight: 1.6, color: C.sub }}>
+            {st.overridden && <div style={{ fontWeight: 600 }}>{noun}临时调整，平时是 {cur}{fmtNum(st.normal)}</div>}
+            {st.note && <div>{st.note}</div>}
+          </div>
+        )}
+
+        <div className="flex-1 mt-8">
+          {groups.length === 0 ? (
+            <div className="text-center pt-12" style={{ color: C.muted, fontSize: 18, lineHeight: 1.7 }}>
+              {now ? `${noun}还没有这个预算的花费` : "这期没有花费"}
+            </div>
+          ) : groups.map((g) => {
+            const d = parse(g.date);
+            return (
+              <div key={g.date} className="mb-5">
+                <div className="flex justify-between pb-2 mb-1" style={{ borderBottom: `1.5px solid ${C.line}`, color: C.muted, fontSize: 16, fontWeight: 600 }}>
+                  <span>{g.date === tStr ? "今天" : g.date === yStr ? "昨天" : `${md(d)} 周${WD[d.getDay()]}`}</span>
+                  <span>{cur}{fmtNum(sum(g.items))}</span>
+                </div>
+                {g.items.map((x) => (
+                  <RecordRow key={x.id} x={x} cur={cur} K={K} incOf={incOf} recur={!!x.recurId && ruleIds.has(x.recurId)}
+                    onClick={() => open({ type: "expense", exp: x })} onDelete={() => removeRecord(x)} openId={swipeId} setOpenId={setSwipeId} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {!isCustom && (
+          <div className="sticky bottom-0 flex items-center justify-between mt-6 py-3 -mx-6 px-6" style={{ background: "rgba(255,255,255,.95)", backdropFilter: "blur(10px)", bottom: 0, paddingBottom: "calc(12px + env(safe-area-inset-bottom))" }}>
+            <button onClick={() => setOffset(offset - 1)} disabled={!canPrev} aria-label="上一期" className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: C.card, opacity: canPrev ? 1 : 0.35 }}>
+              <ChevronLeft size={22} color={C.sub} />
+            </button>
+            <span style={{ fontSize: 20, fontWeight: 700 }}>{rangeText}</span>
+            <button onClick={() => setOffset(offset + 1)} disabled={now} aria-label="下一期" className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: C.card, opacity: now ? 0.35 : 1 }}>
+              <ChevronRight size={22} color={C.sub} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {editing && <BudgetSheet data={data} cur={cur} K={K} upd={upd} initial={b} onClose={() => setEditing(false)} />}
+      {askDel && (
+        <Sheet title="删除这个预算？" onClose={() => setAskDel(false)}>
+          {past ? (
+            <>
+              <button onClick={stop} className="w-full text-left px-5 py-4 mb-3" style={{ background: C.card, borderRadius: 20 }}>
+                <div style={{ fontSize: 19, fontWeight: 600 }}>停止这个预算</div>
+                <div style={{ fontSize: 15, color: C.muted }}>以后不再有这个预算，之前各期的预算对比留在统计里</div>
+              </button>
+              <button onClick={remove} className="w-full text-left px-5 py-4" style={{ background: C.card, borderRadius: 20 }}>
+                <div style={{ fontSize: 19, fontWeight: 600, color: C.over }}>彻底删除</div>
+                <div style={{ fontSize: 15, color: C.muted }}>连之前的预算记录一起删掉，花费记录不受影响</div>
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 16, color: C.sub, lineHeight: 1.6 }}>只会删除预算本身，花费记录不受影响。</div>
+              <button onClick={remove} className="w-full mt-5" style={{ height: 54, borderRadius: 16, background: C.over, color: "#fff", fontSize: 17, fontWeight: 600 }}>删除</button>
+            </>
+          )}
+        </Sheet>
       )}
-      {past && <Note>停止：以后不再有这个预算，之前各期的预算对比还留在统计里。彻底删除：连之前的记录一起删掉。</Note>}
-    </Sheet>
+    </div>
   );
 }
 
