@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useSync, LS } from "./sync.js";
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, ReferenceLine, LineChart, Line } from "recharts";
+import { XAxis, YAxis, ResponsiveContainer, LineChart, Line } from "recharts";
 import {
   ScrollText, BarChart3, LayoutGrid, Settings, Plus, X, Delete, ChevronLeft, ChevronRight, ChevronDown,
   ChevronsUpDown, AlignLeft, Calendar, Trash2, Check, Download, Upload, Search, Repeat, Minus, SlidersHorizontal, RefreshCw, Cloud,
@@ -1007,6 +1007,86 @@ function RateSheet({ base, cc, amount, saved, initialRate, initialSrc, onSave, o
 }
 
 /* ---------- 统计 ---------- */
+const pctText = (v, total) => { const p = (v / total) * 100; return p > 0 && p < 1 ? "<1%" : `${Math.round(p)}%`; };
+const kfmt = (v) => (v >= 1000 ? `${round(v / 1000)}k` : String(round(v)));
+function niceStep(raw) {
+  const m = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / m;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * m;
+}
+/* 柱状图：个别特别大的日子（比如交房租那天）不再把其他天压扁——
+   纵轴按日常花费来定，超出的柱子顶满并在上面标出金额。点一根柱子看当天金额。 */
+function SpendBars({ bars, avg, cur, mode }) {
+  const [sel, setSel] = useState(null);
+  const H = 180;
+  const vals = bars.map((b) => b.v).filter((v) => v > 0).sort((a, b) => a - b);
+  const median = vals.length ? vals[Math.floor((vals.length - 1) / 2)] : 0;
+  const normal = vals.filter((v) => v <= median * 4);
+  const hasOutlier = vals.length >= 3 && normal.length < vals.length && normal.length > 0;
+  const top = hasOutlier ? Math.max(normal[normal.length - 1], avg) * 1.15 : Math.max(vals[vals.length - 1] || 0, avg);
+  const step = top > 0 ? niceStep(top / 3) : 1;
+  const max = top > 0 ? Math.ceil(top / step) * step : 3;
+  const ticks = [0, 1, 2, 3].map((i) => i * step).filter((v) => v <= max);
+  const n = bars.length;
+  const showX = (i) => (mode === "month" ? i === 0 || (i + 1) % 7 === 1 : true);
+  const picked = sel != null ? bars[sel] : null;
+
+  return (
+    <div className="mb-8">
+      <div className="mb-2 flex items-baseline gap-2" style={{ height: 24, fontSize: 16 }}>
+        {picked ? (
+          <>
+            <span style={{ color: C.muted, fontWeight: 500 }}>{picked.label}</span>
+            <span style={{ fontWeight: 700 }}>{cur}{fmtNum(picked.v)}</span>
+          </>
+        ) : (
+          <span style={{ color: C.muted, fontSize: 14 }}>点柱子看{mode === "year" ? "当月" : "当天"}金额{hasOutlier ? "，特别大的几天柱子顶部标了金额" : ""}</span>
+        )}
+      </div>
+      <div className="flex" style={{ height: H + 26, marginTop: hasOutlier ? 18 : 0 }}>
+        <div className="relative shrink-0" style={{ width: 36, height: H }}>
+          {ticks.map((v) => (
+            <span key={v} className="absolute right-2" style={{ bottom: (v / max) * H - 7, fontSize: 12, color: C.muted, lineHeight: "14px" }}>{kfmt(v)}</span>
+          ))}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="relative flex items-end" style={{ height: H, gap: n > 20 ? 3 : n > 10 ? 6 : 10 }}>
+            {avg > 0 && avg <= max && (
+              <div className="absolute left-0 right-0 pointer-events-none" style={{ bottom: (avg / max) * H - 1, borderTop: `2px dashed ${C.muted}`, opacity: 0.7, zIndex: 2 }} />
+            )}
+            {bars.map((b, i) => {
+              const over = b.v > max;
+              const h = b.v > 0 ? Math.max(6, Math.min(1, b.v / max) * H) : 0;
+              const on = sel === i;
+              return (
+                <button key={i} onClick={() => setSel(on ? null : i)} aria-label={`${b.label} ${cur}${fmtNum(b.v)}`}
+                  className="relative flex-1 min-w-0 h-full flex items-end" style={{ maxWidth: 26 }}>
+                  <span className="absolute inset-x-0 bottom-0 top-0" style={{ borderRadius: 6, background: C.card, opacity: b.future ? 0.5 : 1 }} />
+                  {h > 0 && (
+                    <span className="relative w-full" style={{ height: h, borderRadius: 6, background: on ? C.ok : C.dark }}>
+                      {over && <span className="absolute inset-x-0" style={{ top: 10, height: 3, background: C.bg, transform: "skewY(-20deg)" }} />}
+                    </span>
+                  )}
+                  {over && (
+                    <span className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap" style={{ top: -20, fontSize: 12, fontWeight: 700, color: C.ink, zIndex: 3 }}>
+                      {kfmt(b.v)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex" style={{ gap: n > 20 ? 3 : n > 10 ? 6 : 10, marginTop: 6 }}>
+            {bars.map((b, i) => (
+              <span key={i} className="flex-1 min-w-0 text-center" style={{ maxWidth: 26, fontSize: 13, color: C.muted, whiteSpace: "nowrap", overflow: "visible" }}>
+                {showX(i) ? b.x : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 function Insights({ data, cur, K }) {
   const [mode, setMode] = useState("month");
   const [offset, setOffset] = useState(0);
@@ -1018,10 +1098,16 @@ function Insights({ data, cur, K }) {
   const incTotal = sum((data.income || []).filter((x) => inRange(x, s, e)));
 
   const bars = mode === "year"
-    ? Array.from({ length: 12 }, (_, m) => ({ x: `${m + 1}`, v: round(sum(list.filter((x) => parse(x.date).getMonth() === m))) }))
+    ? Array.from({ length: 12 }, (_, m) => ({
+      x: `${m + 1}`, label: `${s.getFullYear()}年${m + 1}月`, future: new Date(s.getFullYear(), m, 1) > t,
+      v: round(sum(list.filter((x) => parse(x.date).getMonth() === m))),
+    }))
     : Array.from({ length: daysBetween(s, e) }, (_, i) => {
       const d = addDays(s, i);
-      return { x: mode === "week" ? WD[d.getDay()] : String(d.getDate()), v: round(sum(list.filter((x) => x.date === fmt(d)))) };
+      return {
+        x: mode === "week" ? WD[d.getDay()] : String(d.getDate()), label: `${md(d)} 周${WD[d.getDay()]}`, future: d > t,
+        v: round(sum(list.filter((x) => x.date === fmt(d)))),
+      };
     });
   const units = mode === "year" ? (t < s ? 0 : t > e ? 12 : t.getMonth() + 1) : t < s ? 0 : t > e ? daysBetween(s, e) : daysBetween(s, t);
   const avg = units ? total / units : 0;
@@ -1084,16 +1170,7 @@ function Insights({ data, cur, K }) {
         </div>
       )}
 
-      <div style={{ height: 210 }} className="mb-8 -ml-2">
-        <ResponsiveContainer>
-          <BarChart data={bars} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>
-            <XAxis dataKey="x" axisLine={false} tickLine={false} tick={{ fontSize: 14, fill: C.muted }} interval={mode === "month" ? 6 : 0} />
-            <YAxis axisLine={false} tickLine={false} width={40} tick={{ fontSize: 12, fill: C.muted }} tickFormatter={(v) => (v >= 1000 ? `${round(v / 1000)}k` : v)} />
-            {avg > 0 && <ReferenceLine y={avg} stroke={C.muted} strokeDasharray="6 6" strokeWidth={2} />}
-            <Bar dataKey="v" fill={C.dark} radius={[6, 6, 6, 6]} background={{ fill: C.card, radius: 6 }} maxBarSize={22} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <SpendBars key={mode + offset} bars={bars} avg={avg} cur={cur} mode={mode} />
 
       {byTop.length === 0 ? <div className="text-center" style={{ color: C.muted, fontSize: 18 }}>这段时间没有开销</div> : (
         <>
@@ -1104,7 +1181,7 @@ function Insights({ data, cur, K }) {
             {byTop.map((c) => (
               <span key={c.id} className="flex items-center gap-2" style={{ fontSize: 17, fontWeight: 600 }}>
                 <span style={{ width: 11, height: 11, borderRadius: 4, background: K.of(c.id).color }} />
-                {K.of(c.id).name}<span style={{ color: C.muted, fontWeight: 500 }}>{Math.round((c.value / total) * 100)}%</span>
+                {K.of(c.id).name}<span style={{ color: C.muted, fontWeight: 500 }}>{pctText(c.value, total)}</span>
               </span>
             ))}
           </div>
@@ -1131,7 +1208,7 @@ function Insights({ data, cur, K }) {
                           <div className="flex items-center gap-2" style={{ fontSize: 17 }}>
                             <span>{sub.emoji}</span>
                             <span className="flex-1">{sc.id === c.id ? "未分子类" : sub.name}</span>
-                            <span style={{ color: C.muted, fontSize: 15 }}>{Math.round((sc.value / c.value) * 100)}%</span>
+                            <span style={{ color: C.muted, fontSize: 15 }}>{pctText(sc.value, c.value)}</span>
                             <span className="text-right" style={{ fontWeight: 600, minWidth: 72 }}>{cur}{fmtNum(sc.value)}</span>
                           </div>
                           {sb && <BudgetLine value={sc.value} b={sb} color={cat.color} />}

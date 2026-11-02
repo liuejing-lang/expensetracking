@@ -1,5 +1,5 @@
 // 离线缓存：没网也能打开 App 记账（记录先存在手机上，联网后再同步）
-const CACHE = "jizhang-202610091902"; // 每次发新版本，这个名字会变，旧缓存自动清掉
+const CACHE = "jizhang-202611021011"; // 每次发新版本，这个名字会变，旧缓存自动清掉
 const FILES = ["./", "index.html", "app.js", "styles.css", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
